@@ -1,0 +1,65 @@
+#! /bin/sh -
+
+######################## PREAMBLE ##########################
+err () {
+	printf '\033[31m%s\033[m\n' "$*" >&2
+}
+
+# TODO: Fallbacks with wget, nc, bash
+command -v curl >/dev/null 2>&1 || { echo "Need curl"; exit 1; }
+command -v timeout >/dev/null 2>&1 || { echo "Need timeout(1)"; exit 1; }
+
+curl () {
+	output=$(timeout 5 curl -sfSL "$@") # strip trailing newline
+	err=$? # save exit status
+	printf '%s\n' "${output}" # add trailing newline
+	[ $err = 0 ] && printf '%s' "${output}" | grep -qF -- http && exit 0 # exit early, we got what we wanted
+	while [ -n "$1" ] && [ "${1}" = "$(printf %s "$1" | tr -d .)" ] ; do shift; done # find domain
+	[ -z "$1" ] && domain="<unknown>" || domain="$1" # didn't find domain?
+	[ $err = 124 ] && err "Timed out" # from timeout 5
+	err "$domain pastebin failed!" # generic error
+	return $err # specifically for chris titus hastebin
+}
+
+trap 'rm -f "$file"' EXIT # clean up tmpfile
+
+file=$(mktemp --tmpdir pubtmpXXXXXXXXXXXXXXX) # must not contain dot .
+if [ -z "$1" ]; then
+	cat >"$file" # `pub` or `<file pub` or `echo bla | pub`
+else
+	if ! cp "$1" "$file"; then # `pub FILE`
+		err "cp failed!"
+		exit 2
+	fi
+fi
+
+######################## PASTEBINS ####################
+# mia's 0x0.st -- fast!
+curl -F"file=@$file" 0x0.st
+
+# pb1n.de -- fast!
+curl -F"f=@$file" pb1n.de
+
+# chris titus' hastebin -- not that fast
+response="$(curl --data-binary @"$file" bin.christitus.com/documents)" &&
+	{ hasteKey="$(printf %s "$response" | jq -r '.key')" && [ -n "${hasteKey}" ] &&
+		echo "http://bin.christitus.com/raw/$hasteKey" && exit 0 || err "Couldn't extract hasteKey. Sorry!"; }
+err "bin.christitus.com pastebin failed!"
+
+# clbin.com -- requires https -- not that fast
+curl -F"clbin=<$file" https://clbin.com
+
+# termbin.com -- slow
+<"$file" nc termbin.com 9999 && exit 0 || err "termbin.com pastebin failed!"
+
+# paste.rs -- damn slow
+curl --data-binary @"$file" paste.rs
+
+#### RIP: sprunge.us, just 404 ####
+curl -F"sprunge=<$file" http://sprunge.us
+
+#### RIP: ix.io, "taking a break" ####
+curl -F"f:1=<$file" ix.io
+
+#### RIP: transfer.sh, loads forever -- requires https ####
+curl --upload-file "$file" https://transfer.sh
